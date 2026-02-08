@@ -88,7 +88,7 @@ def get_clock() -> dict:
 def submit_order(order: OrderRequest) -> dict:
     """Submit a new order."""
     side = OrderSide.BUY if order.side.value == "buy" else OrderSide.SELL
-    tif = TimeInForce(order.time_in_force.value.upper())
+    tif = TimeInForce(order.time_in_force.value)
 
     order_request: MarketOrderRequest | LimitOrderRequest | StopOrderRequest | StopLimitOrderRequest | TrailingStopOrderRequest
 
@@ -166,9 +166,11 @@ def submit_order(order: OrderRequest) -> dict:
 def list_orders(status: str = "open") -> list:
     """List orders."""
     from alpaca.trading.enums import QueryOrderStatus
+    from alpaca.trading.requests import GetOrdersRequest
 
     query_status = QueryOrderStatus(status)
-    orders = get_trading_client().get_orders(filter=query_status)
+    request = GetOrdersRequest(status=query_status)
+    orders = get_trading_client().get_orders(filter=request)
     return serialize_alpaca_response(orders)
 
 
