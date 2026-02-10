@@ -4,12 +4,28 @@ from functools import lru_cache
 from typing import Any
 
 from alpaca.data import StockHistoricalDataClient
-from alpaca.data.requests import StockLatestQuoteRequest
+from alpaca.data.historical.option import OptionHistoricalDataClient
+from alpaca.data.requests import (
+    OptionChainRequest as AlpacaOptionChainRequest,
+    OptionLatestQuoteRequest,
+    OptionSnapshotRequest,
+    StockLatestQuoteRequest,
+)
 from alpaca.trading.client import TradingClient
-from alpaca.trading.enums import OrderSide, OrderType, TimeInForce
+from alpaca.trading.enums import (
+    ContractType as AlpacaContractType,
+    ExerciseStyle as AlpacaExerciseStyle,
+    OrderClass as AlpacaOrderClass,
+    OrderSide,
+    OrderType,
+    PositionIntent as AlpacaPositionIntent,
+    TimeInForce,
+)
 from alpaca.trading.requests import (
+    GetOptionContractsRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    OptionLegRequest,
     StopLimitOrderRequest,
     StopOrderRequest,
     TrailingStopOrderRequest,
@@ -17,7 +33,12 @@ from alpaca.trading.requests import (
 from fastapi import FastAPI, HTTPException
 
 from alpaca_api.config import get_settings
-from alpaca_api.models import ClosePositionRequest, OrderRequest
+from alpaca_api.models import (
+    ClosePositionRequest,
+    MultiLegOrderRequest,
+    OptionOrderRequest,
+    OrderRequest,
+)
 
 app = FastAPI(
     title="Alpaca Paper Trading API",
@@ -42,6 +63,16 @@ def get_data_client() -> StockHistoricalDataClient:
     """Get cached data client instance."""
     settings = get_settings()
     return StockHistoricalDataClient(
+        api_key=settings.alpaca_api_key,
+        secret_key=settings.alpaca_secret_key,
+    )
+
+
+@lru_cache
+def get_option_data_client() -> OptionHistoricalDataClient:
+    """Get cached option data client instance."""
+    settings = get_settings()
+    return OptionHistoricalDataClient(
         api_key=settings.alpaca_api_key,
         secret_key=settings.alpaca_secret_key,
     )
@@ -233,3 +264,224 @@ def get_quote(symbol: str) -> dict:
     request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
     quotes = get_data_client().get_stock_latest_quote(request)
     return serialize_alpaca_response(quotes.get(symbol))
+
+
+# ====================== Options Endpoints ======================
+
+
+@app.get("/options/contracts")
+def get_option_contracts(
+    underlying_symbols: str | None = None,
+    expiration_date: str | None = None,
+    expiration_date_gte: str | None = None,
+    expiration_date_lte: str | None = None,
+    root_symbol: str | None = None,
+    type: str | None = None,
+    style: str | None = None,
+    strike_price_gte: str | None = None,
+    strike_price_lte: str | None = None,
+    limit: int | None = None,
+    page_token: str | None = None,
+) -> dict:
+    """List option contracts with optional filters."""
+    params: dict[str, Any] = {}
+
+    if underlying_symbols:
+        params["underlying_symbols"] = [s.strip() for s in underlying_symbols.split(",")]
+    if expiration_date:
+        params["expiration_date"] = expiration_date
+    if expiration_date_gte:
+        params["expiration_date_gte"] = expiration_date_gte
+    if expiration_date_lte:
+        params["expiration_date_lte"] = expiration_date_lte
+    if root_symbol:
+        params["root_symbol"] = root_symbol
+    if type:
+        params["type"] = AlpacaContractType(type)
+    if style:
+        params["style"] = AlpacaExerciseStyle(style)
+    if strike_price_gte:
+        params["strike_price_gte"] = strike_price_gte
+    if strike_price_lte:
+        params["strike_price_lte"] = strike_price_lte
+    if limit is not None:
+        params["limit"] = limit
+    if page_token:
+        params["page_token"] = page_token
+
+    request = GetOptionContractsRequest(**params)
+    result = get_trading_client().get_option_contracts(request)
+    return serialize_alpaca_response(result)
+
+
+@app.get("/options/contracts/{symbol_or_id}")
+def get_option_contract(symbol_or_id: str) -> dict:
+    """Get a single option contract by symbol or ID."""
+    result = get_trading_client().get_option_contract(symbol_or_id)
+    return serialize_alpaca_response(result)
+
+
+@app.get("/options/chain/{underlying_symbol}")
+def get_option_chain(
+    underlying_symbol: str,
+    type: str | None = None,
+    strike_price_gte: float | None = None,
+    strike_price_lte: float | None = None,
+    expiration_date: str | None = None,
+    expiration_date_gte: str | None = None,
+    expiration_date_lte: str | None = None,
+    root_symbol: str | None = None,
+) -> dict:
+    """Get option chain (snapshots with greeks/IV) for an underlying symbol."""
+    params: dict[str, Any] = {"underlying_symbol": underlying_symbol}
+
+    if type:
+        params["type"] = AlpacaContractType(type)
+    if strike_price_gte is not None:
+        params["strike_price_gte"] = strike_price_gte
+    if strike_price_lte is not None:
+        params["strike_price_lte"] = strike_price_lte
+    if expiration_date:
+        params["expiration_date"] = expiration_date
+    if expiration_date_gte:
+        params["expiration_date_gte"] = expiration_date_gte
+    if expiration_date_lte:
+        params["expiration_date_lte"] = expiration_date_lte
+    if root_symbol:
+        params["root_symbol"] = root_symbol
+
+    request = AlpacaOptionChainRequest(**params)
+    result = get_option_data_client().get_option_chain(request)
+    return serialize_alpaca_response(result)
+
+
+@app.get("/options/quotes/{symbol}")
+def get_option_quote(symbol: str) -> dict:
+    """Get latest quote for an option contract."""
+    request = OptionLatestQuoteRequest(symbol_or_symbols=symbol)
+    quotes = get_option_data_client().get_option_latest_quote(request)
+    return serialize_alpaca_response(quotes.get(symbol))
+
+
+@app.get("/options/snapshots/{symbol}")
+def get_option_snapshot(symbol: str) -> dict:
+    """Get snapshot (quote + trade + greeks + IV) for an option contract."""
+    request = OptionSnapshotRequest(symbol_or_symbols=symbol)
+    snapshots = get_option_data_client().get_option_snapshot(request)
+    return serialize_alpaca_response(snapshots.get(symbol))
+
+
+@app.post("/options/orders")
+def submit_option_order(order: OptionOrderRequest) -> dict:
+    """Submit a single-leg option order."""
+    side = OrderSide.BUY if order.side.value == "buy" else OrderSide.SELL
+    tif = TimeInForce(order.time_in_force.value)
+    order_type = OrderType(order.type.value)
+
+    position_intent = None
+    if order.position_intent:
+        position_intent = AlpacaPositionIntent(order.position_intent.value)
+
+    if order_type == OrderType.MARKET:
+        alpaca_request = MarketOrderRequest(
+            symbol=order.symbol,
+            qty=order.qty,
+            side=side,
+            time_in_force=tif,
+            position_intent=position_intent,
+        )
+    elif order_type == OrderType.LIMIT:
+        if order.limit_price is None:
+            raise HTTPException(status_code=400, detail="limit_price required for limit orders")
+        alpaca_request = LimitOrderRequest(
+            symbol=order.symbol,
+            qty=order.qty,
+            side=side,
+            time_in_force=tif,
+            limit_price=order.limit_price,
+            position_intent=position_intent,
+        )
+    elif order_type == OrderType.STOP:
+        if order.stop_price is None:
+            raise HTTPException(status_code=400, detail="stop_price required for stop orders")
+        alpaca_request = StopOrderRequest(
+            symbol=order.symbol,
+            qty=order.qty,
+            side=side,
+            time_in_force=tif,
+            stop_price=order.stop_price,
+            position_intent=position_intent,
+        )
+    elif order_type == OrderType.STOP_LIMIT:
+        if order.limit_price is None or order.stop_price is None:
+            raise HTTPException(
+                status_code=400,
+                detail="limit_price and stop_price required for stop_limit orders",
+            )
+        alpaca_request = StopLimitOrderRequest(
+            symbol=order.symbol,
+            qty=order.qty,
+            side=side,
+            time_in_force=tif,
+            limit_price=order.limit_price,
+            stop_price=order.stop_price,
+            position_intent=position_intent,
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported order type for options: {order.type}")
+
+    result = get_trading_client().submit_order(alpaca_request)
+    return serialize_alpaca_response(result)
+
+
+@app.post("/options/orders/multi-leg")
+def submit_multi_leg_order(order: MultiLegOrderRequest) -> dict:
+    """Submit a multi-leg option order (spreads, straddles, etc.)."""
+    if len(order.legs) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 legs are required for multi-leg orders")
+    if len(order.legs) > 4:
+        raise HTTPException(status_code=400, detail="At most 4 legs are allowed for multi-leg orders")
+
+    tif = TimeInForce(order.time_in_force.value)
+    order_type = OrderType(order.type.value)
+
+    legs = []
+    for leg in order.legs:
+        leg_side = OrderSide(leg.side.value) if leg.side else None
+        leg_intent = AlpacaPositionIntent(leg.position_intent.value) if leg.position_intent else None
+        legs.append(OptionLegRequest(
+            symbol=leg.symbol,
+            ratio_qty=leg.ratio_qty,
+            side=leg_side,
+            position_intent=leg_intent,
+        ))
+
+    if order_type == OrderType.LIMIT:
+        if order.limit_price is None:
+            raise HTTPException(status_code=400, detail="limit_price required for limit orders")
+        alpaca_request = LimitOrderRequest(
+            qty=order.qty,
+            time_in_force=tif,
+            limit_price=order.limit_price,
+            order_class=AlpacaOrderClass.MLEG,
+            legs=legs,
+        )
+    elif order_type == OrderType.MARKET:
+        alpaca_request = MarketOrderRequest(
+            qty=order.qty,
+            time_in_force=tif,
+            order_class=AlpacaOrderClass.MLEG,
+            legs=legs,
+        )
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported order type for multi-leg: {order.type}")
+
+    result = get_trading_client().submit_order(alpaca_request)
+    return serialize_alpaca_response(result)
+
+
+@app.post("/options/exercise/{symbol_or_id}")
+def exercise_option(symbol_or_id: str) -> dict:
+    """Exercise a held option contract."""
+    get_trading_client().exercise_options_position(symbol_or_id)
+    return {"status": "exercised", "symbol_or_id": symbol_or_id}
